@@ -225,7 +225,6 @@ conn $NAME
         ikelifetime=${P1LIFE}h
         salifetime=${P2LIFE}h
         phase2alg=$ESP
-        phase2=esp
         ike=$IKE
         keyingtries=%forever
         leftsubnets={$LEFTSUBNET}
