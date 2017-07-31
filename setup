@@ -124,14 +124,20 @@ custom_vpn() {
 if [ "$PFS" != "Disable" ] && [ "$IKEVERSION" == "ikev2" ]
 then
 	ESP="${P2ENC}-${P2HASH}-${pfsgroups[${PFS}]}"
-elif [ "$PFS" != "Disable" ] && [ "$IKEVERSION" == "ikev1" ]
+elif [[  "$PFS" != "Disable" ]] && [[ "$IKEVERSION" == "ikev1" ]] && [[ "$TYPE" == "route-based" || "$TYPE" == "cisco-ios" ]]
 then
+	ESP="${P2ENC}-${P2HASH}-${pfsgroups[${PFS}]}"
+elif [[ "$PFS" != "Disable" ]] && [[ "$IKEVERSION" == "ikev1" ]] && [[ "$TYPE" == "policy-based" || "$TYPE" == "cisco-asa" ]]
+then 
 	ESP="${P2ENC}-${P2HASH};${pfsgroups[${PFS}]}"
 else
 	ESP="${P2ENC}-${P2HASH}"
 fi
 
 if [ "$IKEVERSION" == "ikev2" ]
+then
+	IKE="${P1ENC}-${P1INT}-${ikegroups[${P1DHGROUP}]}"
+elif [[  "$PFS" != "Disable" ]] && [[ "$IKEVERSION" == "ikev1" ]] && [[ "$TYPE" == "route-based" || "$TYPE" == "cisco-ios" ]]
 then
 	IKE="${P1ENC}-${P1INT}-${ikegroups[${P1DHGROUP}]}"
 else
@@ -281,6 +287,8 @@ conn ${VPNID}-0
 	right=$PEER1
 	ikelifetime=8h
 	lifetime=1h
+	rekeymargin=12m
+	rekeyfuzz=0%
 	esp=aes128-sha1-modp1024
 	ike=aes128-sha1-modp1024
 	keyingtries=%forever
@@ -309,6 +317,8 @@ conn ${VPNID}-1
 	right=$PEER2
 	ikelifetime=8h
 	lifetime=1h
+	rekeymargin=12m
+	rekeyfuzz=0%
 	esp=aes128-sha1-modp1024
 	ike=aes128-sha1-modp1024
 	keyingtries=%forever
