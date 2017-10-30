@@ -33,6 +33,15 @@ Also, if you have a lot of Security Groups and/or VPC route tables with a lot of
 
 I'm currently looking at a better cleanup system.
 
+## Troubleshooting Failed Deployment
+If Cloudformation fully deploys the stack, but you are not seeing a new VPN connection being created or some of the other features provisioned (ie. no new VPC route table entries), then there are usually three things to that can cause this:
+
+1) Make sure you are deploying the \*swan EC2 in a subnet that is using a route table with a default route out the Internet Gateway
+2) Ensure that if you are using VPC ACLs they are permissive enough, allowing all inbound and outbound TCP ports. The ACLs can be reverted back *after* Cloudshroud has *fully* deployed
+3) Make sure that your VPC is able to resolve public DNS records
+
+These three things are important to have in place so that Cloudshroud can download needed packages and make API calls on your behalf.
+
 ## Unique Features
 - Support for most IKEv1 and IKEv2 ciphers. 
 - 1:1 or Dynamic NAT over IPSEC
