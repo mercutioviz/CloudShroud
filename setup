@@ -25,6 +25,7 @@ VGWCONNECT=$(echo "$VGWCONNECT" | tr '[:upper:]' '[:lower:]')
 if [ "$NAT" == "disable" ]
 then
         LEFTSUBNET=$(aws ec2 describe-vpcs --vpc-ids ${VPC} --region ${REGION} --query 'Vpcs[*].[CidrBlock]' --output text)
+		
 else
         if [[ "$NAT" =~ [,]+ ]]
         then
@@ -50,8 +51,7 @@ else
         else
                 LEFTSUBNET=$NAT
 				for NET in $(echo $ONPREM | sed "s/,/\n/g");do
-					iptables -t nat -A POSTROUTING -s $VPC_CIDR -d $NET -j NETMAP --to $NAT
-					iptables -t nat -A PREROUTING -d $NAT -j NETMAP --to $VPC_CIDR
+					iptables -t nat -A POSTROUTING -d $NET -j NETMAP --to $NAT
 				done
         fi
 fi
