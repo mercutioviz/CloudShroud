@@ -1,0 +1,348 @@
+#!/bin/bash
+
+# This script will go through and configure *swan according to users input in Cloudformation parameters. 
+
+# Get userdata and variables
+source /etc/cloudshroud/variables
+MY_EIP=$(curl http://169.254.169.254/latest/meta-data/public-ipv4)
+MY_ID=$(curl http://169.254.169.254/latest/meta-data/instance-id)
+VPC_CIDR=$(aws ec2 describe-vpcs --vpc-ids ${VPC} --region ${REGION} --query 'Vpcs[*].[CidrBlock]' --output text)
+echo "MY_ID=$MY_ID" >> /etc/cloudshroud/variables
+
+# Map user friendly DH group to swan keyword
+declare -A pfsgroups=( ["Group2"]="modp1024" ["Group5"]="modp1536" ["Group14"]="modp2048" ["Group15"]="modp3072" ["Group16"]="modp4096" ["Group17"]="modp6144" ["Group18"]="modp8192" ["Group22"]="modp1024s160" ["Group23"]="modp2048s224" ["Group24"]="modp2048s256" ["Group25"]="ecp192" ["Group26"]="ecp224" ["Group19"]="ecp256" ["Group20"]="ecp384" ["Group21"]="ecp521" ["Group27"]="ecp224bp" ["Group28"]="ecp256bp" ["Group29"]="ecp384bp" ["Group30"]="ecp512bp" )
+declare -A ikegroups=( ["Group2"]="modp1024" ["Group5"]="modp1536" ["Group14"]="modp2048" ["Group15"]="modp3072" ["Group16"]="modp4096" ["Group17"]="modp6144" ["Group18"]="modp8192" ["Group22"]="modp1024s160" ["Group23"]="modp2048s224" ["Group24"]="modp2048s256" ["Group25"]="ecp192" ["Group26"]="ecp224" ["Group19"]="ecp256" ["Group20"]="ecp384" ["Group21"]="ecp521" ["Group27"]="ecp224bp" ["Group28"]="ecp256bp" ["Group29"]="ecp384bp" ["Group30"]="ecp512bp" )
+
+# Remove any whitespacing from commadelimitedlist variables.
+ONPREM=$(echo ${ONPREM//[[:blank:]]/})
+NAT=$(echo ${NAT//[[:blank:]]/})
+NAT=$(echo "$NAT" | tr '[:upper:]' '[:lower:]')
+VGWCONNECT=$(echo ${VGWCONNECT//[[:blank:]]/})
+VGWCONNECT=$(echo "$VGWCONNECT" | tr '[:upper:]' '[:lower:]')
+
+
+# Detect if user wants to NAT their traffic. If they do, then set the NAT to their local LEFTSUBNET=, otherwise use their VPC CIDR. Also, if they are using NAT determine if it is dynamic or 1:1, and create the iptables accordingly.
+if [ "$NAT" == "disable" ]
+then
+        LEFTSUBNET=$(aws ec2 describe-vpcs --vpc-ids ${VPC} --region ${REGION} --query 'Vpcs[*].[CidrBlock]' --output text)
+		
+else
+        if [[ "$NAT" =~ [,]+ ]]
+        then
+                count=0
+                for ip in $(echo $NAT | sed "s/,/\n/g");do
+                        count=$((count + 1))
+                        if ! ((count % 2)) # Checks if IP is even index in list. If it is, then its the NAT IP. Odd index is the actual VPC host IP to be translated.
+                        then
+						    NAT_IPs+=("$ip")
+							LEFTSUBNET+="${ip}/32,"
+						elif ((count % 2))
+						then
+							REAL_IPs+=("$ip")
+                        fi
+				done
+                LEFTSUBNET=${LEFTSUBNET::-1}
+				x=0
+				for i in "${REAL_IPs[@]}"; do
+						iptables -t nat -A POSTROUTING -s $i -j SNAT --to-source ${NAT_IPs[$x]}
+						iptables -t nat -A PREROUTING -d ${NAT_IPs[$x]} -j DNAT --to-destination $i
+						(( ++x ))
+				done
+        else
+                LEFTSUBNET=$NAT
+				for NET in $(echo $ONPREM | sed "s/,/\n/g");do
+					iptables -t nat -A POSTROUTING -d $NET -j NETMAP --to $NAT
+				done
+        fi
+fi
+sudo iptables-save > /etc/iptables.conf
+echo "# Load these iptables rules >> /etc/rc.local"
+echo "iptables-restore < /etc/iptables.conf" >> /etc/rc.local
+
+create_entries () {
+#This next section will update all the relevant SGs and VPC route tables in this VPC, so that EC2s can openly communication via the swan box
+# Get all the route table ids in this VPC
+route_tables=$(aws ec2 describe-route-tables --region ${REGION} --query 'RouteTables[*].[VpcId==`'${VPC}'`,RouteTableId]' --output text | grep True | awk '{print $2}')
+
+# Check what routes are in each route table
+existing_routes () {
+aws ec2 describe-route-tables --region ${REGION} --query 'RouteTables[?RouteTableId==`'$1'`].Routes[*]' --output text | awk '{print $1}'
+}
+
+# Update the VPC route table(s) with route to on-prem network
+create_onprem_route () {
+aws ec2 create-route --region $REGION --route-table-id $1 --destination-cidr-block $2 --instance-id $MY_ID
+}
+
+# List the security group ids for this VPC
+security_groups=$(aws ec2 describe-security-groups --region ${REGION} --query 'SecurityGroups[*].[VpcId==`'${VPC}'`,GroupId]' --output text | grep True | awk '{print $2}')
+
+# Function to update SGs to allow traffic from another SG
+update_sg () {
+aws ec2 authorize-security-group-ingress --region $REGION --group-id $1 --protocol all --source-group $2
+} 
+
+
+# Loop will go through each route table in this VPC, and if there is no conflicting route for on-prem, will point on-prem route to Openswan ENI
+for table in $route_tables;do
+	existing_rts=$(existing_routes $table)
+	for onprem in $(echo "$ONPREM" | sed "s/,/\n/g");do	
+		conflict=0
+		for route in $existing_rts; do
+
+			if [ "$route" == "$onprem" ]
+			then
+				conflict=1
+				break
+			fi
+			done
+		if [ $conflict -eq 0 ]
+		then
+			echo "NO conflict for $onprem in $table"
+			create_onprem_route $table $onprem
+		else
+			echo "conflict for $onprem in $table"
+		fi
+	done
+done	
+# This next loop will go through and allow all security groups in the VPC to communicate with the Openswan EC2, and vice versa
+for sg in $security_groups; do
+	update_sg $sg $SG_ID
+	update_sg $SG_ID $sg
+done
+}
+if [ "$UPDATE_AWS" == "True" ]
+then
+	create_entries
+fi
+
+CONFIG="/etc/cloudshroud/${NAME}.vpn.conf"
+
+# Function to create VPN based on users preferences IF they are not using a VGW
+custom_vpn() {
+# Create the IPSEC config file for swan
+if [ "$PFS" != "Disable" ] && [ "$IKEVERSION" == "ikev2" ]
+then
+	ESP="${P2ENC}-${P2HASH}-${pfsgroups[${PFS}]}"
+elif [[  "$PFS" != "Disable" ]] && [[ "$IKEVERSION" == "ikev1" ]] && [[ "$TYPE" == "route-based" || "$TYPE" == "cisco-ios" ]]
+then
+	ESP="${P2ENC}-${P2HASH}-${pfsgroups[${PFS}]}"
+elif [[ "$PFS" != "Disable" ]] && [[ "$IKEVERSION" == "ikev1" ]] && [[ "$TYPE" == "policy-based" || "$TYPE" == "cisco-asa" ]]
+then 
+	ESP="${P2ENC}-${P2HASH};${pfsgroups[${PFS}]}"
+else
+	ESP="${P2ENC}-${P2HASH}"
+fi
+
+if [ "$IKEVERSION" == "ikev2" ]
+then
+	IKE="${P1ENC}-${P1INT}-${ikegroups[${P1DHGROUP}]}"
+elif [[  "$PFS" != "Disable" ]] && [[ "$IKEVERSION" == "ikev1" ]] && [[ "$TYPE" == "route-based" || "$TYPE" == "cisco-ios" ]]
+then
+	IKE="${P1ENC}-${P1INT}-${ikegroups[${P1DHGROUP}]}"
+else
+	IKE="${P1ENC}-${P1INT};${ikegroups[${P1DHGROUP}]}"
+fi
+
+if [ "$TYPE" == "route-based" ] || [ "$TYPE" == "cisco-ios" ] # if user chose route-based VPN 
+then
+  cat <<EOF > $CONFIG
+conn $NAME
+	keyexchange=$IKEVERSION
+	auto=start
+	type=tunnel
+	authby=secret
+	leftid=$MY_EIP
+	left=%defaultroute
+	right=$PEER
+	ikelifetime=${P1LIFE}h
+	lifetime=${P2LIFE}h
+	margintime=1m
+	rekeyfuzz=0%
+	esp=${ESP}!
+	ike=${IKE}!
+	keyingtries=%forever
+	leftsubnet=0.0.0.0/0
+	rightsubnet=0.0.0.0/0
+	dpddelay=10s
+	dpdtimeout=30s
+	dpdaction=restart
+	mark=50
+	leftupdown="/etc/cloudshroud/aws.updown -ln vti0 -ll ${LINKLOCAL} -lr ${LINKREMOTE} -m 50"
+EOF
+chmod 644 $CONFIG
+
+cat <<EOF > /etc/cloudshroud/${NAME}.vpn.secrets
+$PEER : PSK "${PSK}"
+EOF
+chmod 644 /etc/cloudshroud/${NAME}.vpn.secrets
+	
+
+elif [ "$TYPE" == "policy-based" ] || [ "$TYPE" == "cisco-asa" ] && [ "$IKEVERSION" != "ikev1" ]  # if user chose policy-based and NOT ikev1
+then
+		cat <<EOF > $CONFIG
+conn $NAME
+	keyexchange=$IKEVERSION
+	auto=start
+	type=tunnel
+	authby=secret
+	leftid=$MY_EIP
+	left=%defaultroute
+	right=$PEER
+	ikelifetime=${P1LIFE}h
+	lifetime=${P2LIFE}h
+	esp=${ESP}!
+	ike=${IKE}!
+	margintime=1m
+	rekeyfuzz=0%
+	keyingtries=%forever
+	leftsubnet=$LEFTSUBNET
+	rightsubnet=$ONPREM
+	dpddelay=10s
+	dpdtimeout=30s
+	dpdaction=restart
+    mark=50
+    leftupdown="/etc/cloudshroud/aws.updown -ln vti0 -ll ${LINKLOCAL} -lr ${LINKREMOTE} -m 50"
+EOF
+chmod 644 $CONFIG
+
+cat <<EOF > /etc/cloudshroud/${NAME}.vpn.secrets
+$PEER : PSK "${PSK}"
+EOF
+chmod 644 /etc/cloudshroud/${NAME}.vpn.secrets
+
+elif [ "$TYPE" == "policy-based" ] || [ "$TYPE" == "cisco-asa" ] && [ "$IKEVERSION" == "ikev1" ] # user chose policy-based AND ikev1 (use openswan)
+then
+		cat <<EOF > $CONFIG
+conn $NAME
+        ikev2=no
+        auto=start
+        type=tunnel
+        authby=secret
+        leftid=$MY_EIP
+        left=%defaultroute
+        right=$PEER
+        ikelifetime=${P1LIFE}h
+        salifetime=${P2LIFE}h
+        phase2alg=$ESP
+        ike=$IKE
+        keyingtries=%forever
+        leftsubnets={$LEFTSUBNET}
+        rightsubnets={$ONPREM}
+EOF
+
+cat <<EOF > /etc/cloudshroud/${NAME}.vpn.secrets
+$MY_EIP $PEER : PSK "${PSK}"
+EOF
+chmod 644 /etc/cloudshroud/${NAME}.vpn.secrets
+			
+fi
+}
+
+# Function to create a VPN to a VGW
+vgw_vpn () {
+   
+	# The file to export download config to
+	XML_FILE=/etc/cloudshroud/output
+   
+  # determine which region the user's VGW is in and then create a VPN to the VGW
+  declare -a REGIONS_ARRAY=( "us-east-1" "us-west-1" "us-west-2" "eu-west-2" "us-east-2" "ap-southeast-1" "ap-southeast-2" "ap-northeast-1" "ap-northeast-2" "sa-east-1" "eu-central-1" "ca-central-1" "ap-south-1" )
+  
+  for region in ${REGIONS_ARRAY[@]}; do
+	if [ "$(aws ec2 describe-vpn-gateways --filters Name=vpn-gateway-id,Values=${VGWCONNECT} --region ${region} --output text | awk 'NR==1{print $2}')" == "available" ]
+	then
+		CGWID=$(aws ec2 create-customer-gateway --region $region --type ipsec.1 --public-ip $MY_EIP --bgp-asn 65523 --query 'CustomerGateway.CustomerGatewayId' --output text)
+		VPNID=$(aws ec2 create-vpn-connection --region $region --type ipsec.1 --customer-gateway-id $CGWID --vpn-gateway-id $VGWCONNECT --options "{\"StaticRoutesOnly\":true}" --query 'VpnConnection.VpnConnectionId' --output text)
+		sleep 20
+		aws ec2 describe-vpn-connections --vpn-connection-ids $VPNID --region $region --query 'VpnConnections[*].[CustomerGatewayConfiguration]' --output text >> "$XML_FILE"
+		aws ec2 create-tags --region $region --resources "$CGWID" "$VPNID" --tags Key=Name,Value=ToCloudShroud-${REGION}
+		break
+	fi
+   done
+		
+	  # parse xml, and assign variables 
+  LINK_LOCAL1=$(echo "cat //tunnel_inside_address/ip_address" |xmllint --shell $XML_FILE | sed '/^\/ >/d' | sed 's/<[^>]*.//g' | awk 'NR==1{print $1}')
+  LINK_REMOTE1=$(echo "cat //tunnel_inside_address/ip_address" |xmllint --shell $XML_FILE | sed '/^\/ >/d' | sed 's/<[^>]*.//g' | awk 'NR==3{print $1}')
+  PEER1=$(echo "cat //tunnel_outside_address/ip_address" |xmllint --shell $XML_FILE | sed '/^\/ >/d' | sed 's/<[^>]*.//g' | awk 'NR==3{print $1}')
+  PSK1=$(echo "cat //ike/pre_shared_key" |xmllint --shell $XML_FILE | sed '/^\/ >/d' | sed 's/<[^>]*.//g' | awk 'NR==1{print $1}')
+  
+  LINK_LOCAL2=$(echo "cat //tunnel_inside_address/ip_address" |xmllint --shell $XML_FILE | sed '/^\/ >/d' | sed 's/<[^>]*.//g' | awk 'NR==5{print $1}')
+  LINK_REMOTE2=$(echo "cat //tunnel_inside_address/ip_address" |xmllint --shell $XML_FILE | sed '/^\/ >/d' | sed 's/<[^>]*.//g' | awk 'NR==7{print $1}')
+  PEER2=$(echo "cat //tunnel_outside_address/ip_address" |xmllint --shell $XML_FILE | sed '/^\/ >/d' | sed 's/<[^>]*.//g' | awk 'NR==7{print $1}')
+  PSK2=$(echo "cat //ike/pre_shared_key" |xmllint --shell $XML_FILE | sed '/^\/ >/d' | sed 's/<[^>]*.//g' | awk 'NR==3{print $1}')	
+  
+  
+  
+  # Create the strongswan VPN to the VGW
+  
+	cat <<EOF > $CONFIG
+conn ${VPNID}-0
+	keyexchange=ikev1
+	auto=start
+	type=tunnel
+	authby=secret
+	leftid=$MY_EIP
+	left=%defaultroute
+	right=$PEER1
+	ikelifetime=8h
+	lifetime=1h
+	rekeymargin=12m
+	rekeyfuzz=0%
+	esp=aes128-sha1-modp1024
+	ike=aes128-sha1-modp1024
+	keyingtries=%forever
+	leftsubnet=0.0.0.0/0
+	rightsubnet=0.0.0.0/0
+	dpddelay=10s
+	dpdtimeout=30s
+	dpdaction=restart
+	mark=50
+	leftupdown="/etc/cloudshroud/aws.updown -ln vti0 -ll ${LINK_LOCAL1} -lr ${LINK_REMOTE1} -m 50"
+EOF
+
+cat <<EOF > /etc/cloudshroud/${NAME}.vpn.secrets
+$PEER1 : PSK "${PSK1}"
+EOF
+chmod 644 /etc/cloudshroud/${NAME}.vpn.secrets
+
+  cat <<EOT >> $CONFIG
+conn ${VPNID}-1
+	keyexchange=ikev1
+	auto=start
+	type=tunnel
+	authby=secret
+	leftid=$MY_EIP
+	left=%defaultroute
+	right=$PEER2
+	ikelifetime=8h
+	lifetime=1h
+	rekeymargin=12m
+	rekeyfuzz=0%
+	esp=aes128-sha1-modp1024
+	ike=aes128-sha1-modp1024
+	keyingtries=%forever
+	leftsubnet=0.0.0.0/0
+	rightsubnet=0.0.0.0/0
+	dpddelay=10s
+	dpdtimeout=30s
+	dpdaction=restart
+	mark=100
+	leftupdown="/etc/cloudshroud/aws.updown -ln vti1 -ll ${LINK_LOCAL2} -lr ${LINK_REMOTE2} -m 100"
+EOT
+
+cat <<EOT >> /etc/cloudshroud/${NAME}.vpn.secrets
+$PEER2 : PSK "${PSK2}"
+EOT
+}
+
+if [ "$VGWCONNECT" == "custom" ]
+then
+	custom_vpn
+else
+	vgw_vpn
+fi
+
+rm -f /etc/cloudshroud/output
+
+# Remove this script. It only neeeds to run once for initial setup
+rm -- "$0"
