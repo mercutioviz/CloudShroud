@@ -205,8 +205,6 @@ conn $NAME
 	dpddelay=10s
 	dpdtimeout=30s
 	dpdaction=restart
-    mark=50
-    leftupdown="/etc/cloudshroud/aws.updown -ln vti0 -ll ${LINKLOCAL} -lr ${LINKREMOTE} -m 50"
 EOF
 chmod 644 $CONFIG
 
