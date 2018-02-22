@@ -194,7 +194,7 @@ conn $NAME
 	right=$PEER
 	ikelifetime=${P1LIFE}h
 	lifetime=${P2LIFE}h
-	pfs=${PFS}
+	pfs=${PFSANSWER}
 	esp=${ESP}!
 	ike=${IKE}!
 	margintime=1m
@@ -228,7 +228,7 @@ conn $NAME
         right=$PEER
         ikelifetime=${P1LIFE}h
         salifetime=${P2LIFE}h
-	pfs=${PFS}
+	pfs=${PFSANSWER}
         phase2alg=$ESP
         ike=$IKE
         keyingtries=%forever
