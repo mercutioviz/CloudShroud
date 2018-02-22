@@ -121,6 +121,7 @@ CONFIG="/etc/cloudshroud/${NAME}.vpn.conf"
 # Function to create VPN based on users preferences IF they are not using a VGW
 custom_vpn() {
 # Create the IPSEC config file for swan
+PFS='yes'
 if [ "$PFS" != "Disable" ] && [ "$IKEVERSION" == "ikev2" ]
 then
 	ESP="${P2ENC}-${P2HASH}-${pfsgroups[${PFS}]}"
@@ -132,6 +133,7 @@ then
 	ESP="${P2ENC}-${P2HASH};${pfsgroups[${PFS}]}"
 else
 	ESP="${P2ENC}-${P2HASH}"
+	PFS='no'
 fi
 
 if [ "$IKEVERSION" == "ikev2" ]
@@ -159,6 +161,7 @@ conn $NAME
 	lifetime=${P2LIFE}h
 	margintime=1m
 	rekeyfuzz=0%
+	pfs=${PFS}
 	esp=${ESP}!
 	ike=${IKE}!
 	keyingtries=%forever
@@ -191,6 +194,7 @@ conn $NAME
 	right=$PEER
 	ikelifetime=${P1LIFE}h
 	lifetime=${P2LIFE}h
+	pfs=${PFS}
 	esp=${ESP}!
 	ike=${IKE}!
 	margintime=1m
@@ -224,6 +228,7 @@ conn $NAME
         right=$PEER
         ikelifetime=${P1LIFE}h
         salifetime=${P2LIFE}h
+	pfs=${PFS}
         phase2alg=$ESP
         ike=$IKE
         keyingtries=%forever
