@@ -330,7 +330,7 @@
 				"Openswan": "ami-8e8f2fe1"
 			},
 			"ca-central-1": {
-				"Strongswan": "ami-c80d10ab",
+				"Strongswan": "ami-2465da40",
 				"Openswan": "ami-c2803fa6"
 			},
 			"ap-south-1": {
