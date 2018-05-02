@@ -1,6 +1,6 @@
 {
 	"AWSTemplateFormatVersion": "2010-09-09",
-	"Description": "(MC)CloudShroud is a helper CF template which will launch and automate the setup of a *swan EC2 to act as a VPN endpoint to your VPC.",
+	"Description": "CloudShroud is a helper CF template which will launch and automate the setup of a *swan EC2 to act as a VPN endpoint to your VPC.",
 	"Metadata": {
 		"AWS::CloudFormation::Interface": {
 			"ParameterGroups": [{
@@ -361,20 +361,20 @@
 					"Install": {
 						"files": {
 							"/etc/cloudshroud/setup": {
-								"source": "https://raw.githubusercontent.com/mercutioviz/CloudShroud/master/setup",
+								"source": "https://raw.githubusercontent.com/CloudShroud/CloudShroud/master/setup",
 								"mode": "000755",
 								"user": "root",
 								"group": "root"
 							},
 							"/etc/cloudshroud/aws.updown": {
-								"source": "https://raw.githubusercontent.com/mercutioviz/CloudShroud/master/aws.updown",
+								"source": "https://raw.githubusercontent.com/CloudShroud/CloudShroud/master/aws.updown",
 								"mode": "000755",
 								"user": "root",
 								"group": "root"
 
 							},
 							"/etc/init.d/cloudshroud-cleanup": {
-								"source": "https://raw.githubusercontent.com/mercutioviz/CloudShroud/master/cloudshroud-cleanup",
+								"source": "https://raw.githubusercontent.com/CloudShroud/CloudShroud/master/cloudshroud-cleanup",
 								"mode": "000755",
 								"user": "root",
 								"group": "root"
